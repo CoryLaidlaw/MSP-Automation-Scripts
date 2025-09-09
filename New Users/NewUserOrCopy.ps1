@@ -27,6 +27,7 @@ function Prompt-UserInfo {
     } while ($samExists)
 
     $title = Read-Host "Title (if desired)"
+    $department = Read-Host "Department (if desired)"
 
     do {
         $manager = Read-Host "Manager (sAMAccountName or DN, leave blank if none)"
@@ -44,6 +45,7 @@ function Prompt-UserInfo {
         Surname       = $surname
         SamAccountName= $sam
         Title         = $title
+        Department    = $department
         Manager       = $manager
         Phone         = $phone
         Email         = $email
@@ -83,7 +85,13 @@ if ($choice -eq 'N') {
     } while (-not $ouExists)
 
     $refUser = Get-ADUser -Filter * -SearchBase $ou ` | Select-Object -First 1
-    $domain = $refUser.UserPrincipalName.Split('@')[1]
+    $defaultDomain = $refUser.UserPrincipalName.Split('@')[1]
+    $domainInput = Read-Host "UPN domain (leave blank for $defaultDomain)"
+    if ([string]::IsNullOrWhiteSpace($domainInput)) {
+        $domain = $defaultDomain
+    } else {
+        $domain = $domainInput
+    }
     $userParams = @{
         GivenName             = $userInfo.GivenName
         Surname               = $userInfo.Surname
@@ -96,10 +104,11 @@ if ($choice -eq 'N') {
         Enabled               = $true
     }
 
-    if ($userInfo.Title)  { $userParams['Title']        = $userInfo.Title }
-    if ($userInfo.Manager){ $userParams['Manager']      = $userInfo.Manager }
-    if ($userInfo.Phone)  { $userParams['OfficePhone']  = $userInfo.Phone }
-    if ($userInfo.Email)  { $userParams['EmailAddress'] = $userInfo.Email }
+    if ($userInfo.Title)      { $userParams['Title']        = $userInfo.Title }
+    if ($userInfo.Department) { $userParams['Department']   = $userInfo.Department }
+    if ($userInfo.Manager)    { $userParams['Manager']      = $userInfo.Manager }
+    if ($userInfo.Phone)      { $userParams['OfficePhone']  = $userInfo.Phone }
+    if ($userInfo.Email)      { $userParams['EmailAddress'] = $userInfo.Email }
     
     New-ADUser @userParams
     Write-Host "Created user $($userInfo.SamAccountName) in $ou"
@@ -125,10 +134,11 @@ if ($choice -eq 'N') {
         Enabled               = $true
     }
 
-    if ($userInfo.Title)  { $userParams['Title']        = $userInfo.Title }
-    if ($userInfo.Manager) { $userParams['Manager']     = $userInfo.Manager } elseif ($sourceUser.Manager) { $userParams['Manager'] = $sourceUser.Manager }
-    if ($userInfo.Phone)  { $userParams['OfficePhone']  = $userInfo.Phone }
-    if ($userInfo.Email)  { $userParams['EmailAddress'] = $userInfo.Email }
+    if ($userInfo.Title)      { $userParams['Title']        = $userInfo.Title }
+    if ($userInfo.Department) { $userParams['Department']   = $userInfo.Department }
+    if ($userInfo.Manager)    { $userParams['Manager']      = $userInfo.Manager } elseif ($sourceUser.Manager) { $userParams['Manager'] = $sourceUser.Manager }
+    if ($userInfo.Phone)      { $userParams['OfficePhone']  = $userInfo.Phone }
+    if ($userInfo.Email)      { $userParams['EmailAddress'] = $userInfo.Email }
     
     New-ADUser @userParams
     $groups = $sourceUser.MemberOf
