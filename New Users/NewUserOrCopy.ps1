@@ -26,10 +26,18 @@ function Prompt-UserInfo {
         if ($samExists) { Write-Warning "Username $sam already exists." }
     } while ($samExists)
 
-    $title   = Read-Host "Title (if desired)"
-    $manager = Read-Host "Manager (if desired)"
-    $phone   = Read-Host "Phone number (if desired)"
-    $email   = Read-Host "Email (if desired)"
+    $title = Read-Host "Title (if desired)"
+
+    do {
+        $manager = Read-Host "Manager (sAMAccountName or DN, leave blank if none)"
+        if ($manager) {
+            $mgrExists = Get-ADUser -Identity $manager -ErrorAction SilentlyContinue
+            if (-not $mgrExists) { Write-Warning "Manager $manager not found." }
+        }
+    } while ($manager -and -not $mgrExists)
+
+    $phone = Read-Host "Phone number (if desired)"
+    $email = Read-Host "Email (if desired)"
 
     return [pscustomobject]@{
         GivenName     = $givenName
@@ -68,7 +76,12 @@ $userInfo = Prompt-UserInfo
 $password = Read-Password
 
 if ($choice -eq 'N') {
-    $ou = Read-Required "OU distinguished name to create user in"
+    do {
+        $ou = Read-Required "OU distinguished name to create user in (e.g., OU=Employees,DC=example,DC=com)"
+        $ouExists = Get-ADOrganizationalUnit -Identity $ou -ErrorAction SilentlyContinue
+        if (-not $ouExists) { Write-Warning "OU $ou not found." }
+    } while (-not $ouExists)
+
     $refUser = Get-ADUser -Filter * -SearchBase $ou ` | Select-Object -First 1
     $domain = $refUser.UserPrincipalName.Split('@')[1]
     $userParams = @{
