@@ -26,10 +26,10 @@ function Prompt-UserInfo {
         if ($samExists) { Write-Warning "Username $sam already exists." }
     } while ($samExists)
 
-    $title = Read-Host "Title"
-    $manager = Read-Host "Manager"
-    $phone = Read-Host "Phone number"
-    $email = Read-Host "Email"
+    $title   = Read-Host "Title (if desired)"
+    $manager = Read-Host "Manager (if desired)"
+    $phone   = Read-Host "Phone number (if desired)"
+    $email   = Read-Host "Email (if desired)"
 
     return [pscustomobject]@{
         GivenName     = $givenName
@@ -42,6 +42,22 @@ function Prompt-UserInfo {
     }
 }
 
+function Read-Password {
+    do {
+        $plain = Read-Host "Temporary password"
+        $complex = $plain.Length -ge 12 -and
+                   $plain -match '[A-Z]' -and
+                   $plain -match '[a-z]' -and
+                   $plain -match '[0-9]' -and
+                   $plain -match '[^a-zA-Z0-9]'
+        if (-not $complex) {
+            Write-Warning "Password must be ≥12 chars and include uppercase, lowercase, number, and symbol."
+        }
+    } until ($complex)
+
+    ConvertTo-SecureString $plain -AsPlainText -Force
+}
+
 $choice = ""
 while ($choice -notin @('N','C')) {
     $choice = Read-Host "Is this a (N)ew user or (C)opy from existing user? (N/C)"
@@ -49,22 +65,29 @@ while ($choice -notin @('N','C')) {
 }
 
 $userInfo = Prompt-UserInfo
+$password = Read-Password
 
 if ($choice -eq 'N') {
     $ou = Read-Required "OU distinguished name to create user in"
+    $refUser = Get-ADUser -Filter * -SearchBase $ou ` | Select-Object -First 1
+    $domain = $refUser.UserPrincipalName.Split('@')[1]
     $userParams = @{
-        GivenName       = $userInfo.GivenName
-        Surname         = $userInfo.Surname
-        Name            = "$($userInfo.GivenName) $($userInfo.Surname)"
-        SamAccountName  = $userInfo.SamAccountName
-        UserPrincipalName = "$($userInfo.SamAccountName)@$(Get-ADDomain).DomainName"
-        Title           = $userInfo.Title
-        Manager         = $userInfo.Manager
-        OfficePhone     = $userInfo.Phone
-        EmailAddress    = $userInfo.Email
-        Path            = $ou
-        Enabled         = $false
+        GivenName             = $userInfo.GivenName
+        Surname               = $userInfo.Surname
+        Name                  = "$($userInfo.GivenName) $($userInfo.Surname)"
+        SamAccountName        = $userInfo.SamAccountName
+        UserPrincipalName     = "$($userInfo.SamAccountName)@$domain"
+        Path                  = $ou
+        AccountPassword       = $password
+        ChangePasswordAtLogon = $true
+        Enabled               = $true
     }
+
+    if ($userInfo.Title)  { $userParams['Title']        = $userInfo.Title }
+    if ($userInfo.Manager){ $userParams['Manager']      = $userInfo.Manager }
+    if ($userInfo.Phone)  { $userParams['OfficePhone']  = $userInfo.Phone }
+    if ($userInfo.Email)  { $userParams['EmailAddress'] = $userInfo.Email }
+    
     New-ADUser @userParams
     Write-Host "Created user $($userInfo.SamAccountName) in $ou"
 } else {
@@ -75,22 +98,27 @@ if ($choice -eq 'N') {
         if (-not $sourceUser) { Write-Warning "Source user $sourceSam not found." }
     } while (-not $sourceUser)
 
+    $domain = $sourceUser.UserPrincipalName.Split('@')[1]
     $ou = $sourceUser.DistinguishedName -replace '^CN=[^,]+,',''
     $userParams = @{
-        GivenName       = $userInfo.GivenName
-        Surname         = $userInfo.Surname
-        Name            = "$($userInfo.GivenName) $($userInfo.Surname)"
-        SamAccountName  = $userInfo.SamAccountName
-        UserPrincipalName = "$($userInfo.SamAccountName)@$(Get-ADDomain).DomainName"
-        Title           = if ($userInfo.Title) { $userInfo.Title } else { $sourceUser.Title }
-        Manager         = if ($userInfo.Manager) { $userInfo.Manager } else { $sourceUser.Manager }
-        OfficePhone     = if ($userInfo.Phone) { $userInfo.Phone } else { $sourceUser.OfficePhone }
-        EmailAddress    = if ($userInfo.Email) { $userInfo.Email } else { $sourceUser.EmailAddress }
-        Path            = $ou
-        Enabled         = $false
+        GivenName             = $userInfo.GivenName
+        Surname               = $userInfo.Surname
+        Name                  = "$($userInfo.GivenName) $($userInfo.Surname)"
+        SamAccountName        = $userInfo.SamAccountName
+        UserPrincipalName     = "$($userInfo.SamAccountName)@$domain"
+        Path                  = $ou
+        AccountPassword       = $password
+        ChangePasswordAtLogon = $true
+        Enabled               = $true
     }
+
+    if ($userInfo.Title)  { $userParams['Title']        = $userInfo.Title }
+    if ($userInfo.Manager) { $userParams['Manager']     = $userInfo.Manager } elseif ($sourceUser.Manager) { $userParams['Manager'] = $sourceUser.Manager }
+    if ($userInfo.Phone)  { $userParams['OfficePhone']  = $userInfo.Phone }
+    if ($userInfo.Email)  { $userParams['EmailAddress'] = $userInfo.Email }
+    
     New-ADUser @userParams
     $groups = $sourceUser.MemberOf
     if ($groups) { Add-ADPrincipalGroupMembership -Identity $userInfo.SamAccountName -MemberOf $groups }
-    Write-Host "Created user $($userInfo.SamAccountName) copied from $sourceSam"
+    Write-Host "Created user $($userInfo.SamAccountName) copied from $sourceSam  in $ou"
 }
