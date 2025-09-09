@@ -1,6 +1,6 @@
 # PowerShell script to check size of all folders and items in a target path, including pagefile.sys if it exists
 
-$targetPath = "C:\windows"
+$targetPath = "C:\path\to\folder"
 
 # Calculate total size of C:\Windows using recursive method
 $totalSize = (Get-ChildItem -Path $targetPath -Recurse -Force -ErrorAction SilentlyContinue |
@@ -26,3 +26,4 @@ Get-ChildItem -Path $targetPath -Directory | ForEach-Object {
         PercentOfTotal = if ($totalSize -gt 0) { [Math]::Round(($size / $totalSize) * 100, 2) } else { 0 }
     }
 } | Sort-Object SizeGB -Descending | Format-Table -AutoSize
+
