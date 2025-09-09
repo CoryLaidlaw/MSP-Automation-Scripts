@@ -1,5 +1,5 @@
 ﻿# === Configure this variable ===
-$onedrivePath = "C:\Users\user\OneDrive"
+$onedrivePath = "C:\Users\USERNAME\OneDrive"
 
 # Ensure OneDrive path is valid
 if (-not (Test-Path $onedrivePath)) {
@@ -49,4 +49,5 @@ if (-not $files) {
 }
 
 Write-Host "Script complete." -ForegroundColor Cyan
+
 
