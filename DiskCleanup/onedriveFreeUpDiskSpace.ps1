@@ -1,5 +1,5 @@
 ﻿# === Configure this variable ===
-$onedrivePath = "C:\Users\claidlaw\OneDrive - Nuvodia"
+$onedrivePath = "C:\Users\user\OneDrive"
 
 # Ensure OneDrive path is valid
 if (-not (Test-Path $onedrivePath)) {
@@ -49,3 +49,4 @@ if (-not $files) {
 }
 
 Write-Host "Script complete." -ForegroundColor Cyan
+
