@@ -1,11 +1,22 @@
 # Requires: ActiveDirectory module
 
-param(
-    [Parameter(Mandatory=$true)]
-    [string]$CsvPath
-)
-
 Import-Module ActiveDirectory
+
+while ($true) {
+    $CsvPath = Read-Host -Prompt "Enter the path to the CSV file"
+
+    if ([string]::IsNullOrWhiteSpace($CsvPath)) {
+        Write-Warning "CSV path cannot be empty."
+        continue
+    }
+
+    if (-not (Test-Path -Path $CsvPath)) {
+        Write-Warning "CSV file '$CsvPath' was not found. Please enter a valid path."
+        continue
+    }
+
+    break
+}
 
 function Test-PasswordComplexity {
     param([string]$Plain)
@@ -30,6 +41,24 @@ foreach ($record in $records) {
         Manager        = $record.Manager
         Phone          = $record.Phone
         Email          = $record.Email
+    }
+
+    $sourceSam = $null
+    $sourceUser = $null
+    if ($choice -eq 'C') {
+        $sourceSam = $record.SourceSam
+
+        if ([string]::IsNullOrWhiteSpace($sourceSam)) {
+            Write-Warning "SourceSam is required for copy action for $($userInfo.SamAccountName). Skipping."
+            continue
+        }
+
+        $sourceUser = Get-ADUser -Identity $sourceSam -Properties MemberOf,Title,Manager,OfficePhone,EmailAddress -ErrorAction SilentlyContinue
+
+        if (-not $sourceUser) {
+            Write-Warning "Source user $sourceSam not found. Skipping $($userInfo.SamAccountName)."
+            continue
+        }
     }
 
     $nameExists = Get-ADUser -Filter "GivenName -eq '$($userInfo.GivenName)' -and Surname -eq '$($userInfo.Surname)'" -ErrorAction SilentlyContinue
@@ -84,10 +113,6 @@ foreach ($record in $records) {
         Write-Host "Created user $($userInfo.SamAccountName) in $ou"
     }
     elseif ($choice -eq 'C') {
-        $sourceSam = $record.SourceSam
-        $sourceUser = Get-ADUser -Identity $sourceSam -Properties MemberOf,Title,Manager,OfficePhone,EmailAddress -ErrorAction SilentlyContinue
-        if (-not $sourceUser) { Write-Warning "Source user $sourceSam not found. Skipping $($userInfo.SamAccountName)."; continue }
-
         $domain = $sourceUser.UserPrincipalName.Split('@')[1]
         $ou = $sourceUser.DistinguishedName -replace '^CN=[^,]+,',''
 
