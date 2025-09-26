@@ -126,6 +126,130 @@ if ($script:IsDryRun) {
     Write-Log -Message 'DryRun mode enabled. No changes will be made.' -Level 'Info'
 }
 
+function Prompt-UserYesNo {
+    param(
+        [Parameter(Mandatory)][string]$Prompt
+    )
+
+    while ($true) {
+        $response = Read-Host -Prompt $Prompt
+        if ([string]::IsNullOrWhiteSpace($response)) {
+            Write-Log -Message 'No response detected. Please enter Y or N.' -Level 'Warning'
+            continue
+        }
+
+        switch ($response.Trim().ToLowerInvariant()) {
+            { $_ -in @('y', 'yes') } { return $true }
+            { $_ -in @('n', 'no') } { return $false }
+            default {
+                Write-Log -Message 'Invalid response. Please enter Y or N.' -Level 'Warning'
+            }
+        }
+    }
+}
+
+function Get-LargeOneDriveFolders {
+    $results = @()
+    try {
+        $oneDriveFolders = Get-ChildItem -Path 'C:\Users' -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\OneDrive' } |
+            Select-Object -Unique -Property FullName
+
+        foreach ($folder in $oneDriveFolders) {
+            try {
+                $sizeBytes = (Get-ChildItem -LiteralPath $folder.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+                    Where-Object { -not $_.PSIsContainer } |
+                    Measure-Object -Property Length -Sum).Sum
+                $sizeGB = if ($sizeBytes) { [math]::Round($sizeBytes / 1GB, 2) } else { 0 }
+                $results += [pscustomobject]@{
+                    FullName = $folder.FullName
+                    SizeGB   = $sizeGB
+                }
+            }
+            catch {
+                Write-Log -Message "Unable to evaluate size for OneDrive folder $($folder.FullName) : $($_.Exception.Message)" -Level 'Warning'
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "Unable to enumerate OneDrive folders : $($_.Exception.Message)" -Level 'Warning'
+    }
+
+    return $results | Where-Object { $_.SizeGB -gt 10 }
+}
+
+function Get-PageFileSizeInfo {
+    $pageFiles = @()
+    try {
+        $pageFileUsage = Get-CimInstance -ClassName Win32_PageFileUsage -ErrorAction Stop
+        foreach ($entry in $pageFileUsage) {
+            $sizeGB = if ($entry.AllocatedBaseSize) { [math]::Round($entry.AllocatedBaseSize / 1024, 2) } else { 0 }
+            $pageFiles += [pscustomobject]@{
+                Path   = $entry.Name
+                SizeGB = $sizeGB
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "Unable to retrieve page file usage information : $($_.Exception.Message)" -Level 'Warning'
+    }
+
+    if (-not $pageFiles -and (Test-Path -LiteralPath 'C:\pagefile.sys')) {
+        try {
+            $pageFile = Get-Item -LiteralPath 'C:\pagefile.sys' -ErrorAction Stop
+            $sizeGB = [math]::Round($pageFile.Length / 1GB, 2)
+            $pageFiles += [pscustomobject]@{
+                Path   = $pageFile.FullName
+                SizeGB = $sizeGB
+            }
+        }
+        catch {
+            Write-Log -Message "Unable to access C:\\pagefile.sys : $($_.Exception.Message)" -Level 'Warning'
+        }
+    }
+
+    return $pageFiles
+}
+
+$script:OneDriveDeclinedInitially = $false
+$script:PageFileDeclinedInitially = $false
+
+if (-not $SetOneDriveOnlineOnly) {
+    $largeOneDriveFolders = Get-LargeOneDriveFolders
+    if ($largeOneDriveFolders) {
+        foreach ($folder in $largeOneDriveFolders) {
+            Write-Log -Message "Detected OneDrive folder exceeding 10 GB: $($folder.FullName) ($($folder.SizeGB) GB)." -Level 'Info'
+        }
+
+        if (Prompt-UserYesNo -Prompt 'Run Set OneDrive folders to online-only now? (Y/N)') {
+            $SetOneDriveOnlineOnly = $true
+            Write-Log -Message 'User opted to run the OneDrive online-only step based on initial prompt.' -Level 'Info'
+        }
+        else {
+            $script:OneDriveDeclinedInitially = $true
+            Write-Log -Message 'User declined the OneDrive online-only step during the initial prompt.' -Level 'Info'
+        }
+    }
+}
+
+if (-not $ConfigurePageFile) {
+    $pageFiles = Get-PageFileSizeInfo | Where-Object { $_.SizeGB -gt 10 }
+    if ($pageFiles) {
+        foreach ($pageFile in $pageFiles) {
+            Write-Log -Message "Detected page file exceeding 10 GB: $($pageFile.Path) ($($pageFile.SizeGB) GB)." -Level 'Info'
+        }
+
+        if (Prompt-UserYesNo -Prompt 'Run Configure page file size now? (Y/N)') {
+            $ConfigurePageFile = $true
+            Write-Log -Message 'User opted to configure the page file based on initial prompt.' -Level 'Info'
+        }
+        else {
+            $script:PageFileDeclinedInitially = $true
+            Write-Log -Message 'User declined the page file configuration during the initial prompt.' -Level 'Info'
+        }
+    }
+}
+
 function Get-FreeSpaceInfo {
     param(
         [Parameter(Mandatory)][string]$DriveLetter
@@ -349,7 +473,7 @@ Invoke-ManagedStep -Name 'Run DISM component cleanup' -Enabled $RunDismCleanup -
     }
 }
 
-Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneDriveOnlineOnly -ScriptBlock {
+$setOneDriveOnlineOnlyScript = {
     Write-Log -Message 'Searching for OneDrive folders.' -Level 'Substep'
     $oneDriveFolders = Get-ChildItem -Path 'C:\\Users' -Directory -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match '\\OneDrive' } |
@@ -367,7 +491,9 @@ Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneD
     }
 }
 
-Invoke-ManagedStep -Name 'Configure page file size' -Enabled $ConfigurePageFile -ScriptBlock {
+Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneDriveOnlineOnly -ScriptBlock $setOneDriveOnlineOnlyScript
+
+$configurePageFileScript = {
     Write-Log -Message 'Disabling automatic page file management.' -Level 'Substep'
     Invoke-DryRunOperation -Description 'Disable automatic page file management with WMIC.' -Operation {
         wmic.exe computersystem where "name='%computername%'" set AutomaticManagedPagefile=False | Out-Null
@@ -387,6 +513,8 @@ Invoke-ManagedStep -Name 'Configure page file size' -Enabled $ConfigurePageFile 
         }
     }
 }
+
+Invoke-ManagedStep -Name 'Configure page file size' -Enabled $ConfigurePageFile -ScriptBlock $configurePageFileScript
 
 Invoke-ManagedStep -Name 'Remove targeted user profiles' -Enabled $RemoveTargetedProfiles -ScriptBlock {
     Write-Log -Message 'Locating targeted user profiles.' -Level 'Substep'
@@ -430,57 +558,113 @@ Write-Log -Message "Final Free Space: $($finalInfo.FreeGB) GB ($($finalInfo.Perc
 $freed = [math]::Round($finalInfo.FreeGB - $initialInfo.FreeGB, 2)
 Write-Log -Message "Net Space Freed: $freed GB." -Level 'Info'
 
+$additionalActionsRun = $false
+
 if ($finalInfo.PercentFree -lt 10) {
-    Write-Log -Message 'Free space remains below 10%. Gathering additional diagnostics.' -Level 'Warning'
+    Write-Log -Message 'Free space remains below 10% after initial cleanup.' -Level 'Warning'
 
-    $userProfiles = Get-ChildItem -Path 'C:\\Users' -Directory -ErrorAction SilentlyContinue
-    $profileSizes = foreach ($profile in $userProfiles) {
-        Write-Log -Message "Calculating size for profile $($profile.FullName)." -Level 'Substep'
-        $sizeBytes = (Get-ChildItem -LiteralPath $profile.FullName -Recurse -Force -ErrorAction SilentlyContinue |
-            Where-Object { -not $_.PSIsContainer } |
-            Measure-Object -Property Length -Sum).Sum
+    if ($script:OneDriveDeclinedInitially) {
+        $largeOneDriveFolders = Get-LargeOneDriveFolders
+        if ($largeOneDriveFolders) {
+            foreach ($folder in $largeOneDriveFolders) {
+                Write-Log -Message "OneDrive folder still exceeds 10 GB: $($folder.FullName) ($($folder.SizeGB) GB)." -Level 'Info'
+            }
 
-        [pscustomobject]@{
-            Profile = $profile.FullName
-            SizeGB  = if ($sizeBytes) { [math]::Round($sizeBytes / 1GB, 2) } else { 0 }
+            if (Prompt-UserYesNo -Prompt 'Set OneDrive folders to online-only now? (Y/N)') {
+                $SetOneDriveOnlineOnly = $true
+                $script:OneDriveDeclinedInitially = $false
+                Write-Log -Message 'User opted to run the OneDrive online-only step after the final prompt.' -Level 'Info'
+                Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $true -ScriptBlock $setOneDriveOnlineOnlyScript
+                $additionalActionsRun = $true
+            }
+            else {
+                Write-Log -Message 'User declined the OneDrive online-only step during the final prompt.' -Level 'Info'
+            }
         }
     }
 
-    if ($profileSizes) {
-        $formattedProfiles = $profileSizes | Sort-Object -Property SizeGB -Descending | Format-Table -AutoSize | Out-String
-        Write-Log -Message "User Profile Sizes (GB):`n$formattedProfiles" -Level 'Info'
-    }
-    else {
-        Write-Log -Message 'No user profiles found during diagnostic collection.' -Level 'Info'
+    if ($script:PageFileDeclinedInitially) {
+        $pageFiles = Get-PageFileSizeInfo | Where-Object { $_.SizeGB -gt 10 }
+        if ($pageFiles) {
+            foreach ($pageFile in $pageFiles) {
+                Write-Log -Message "Page file still exceeds 10 GB: $($pageFile.Path) ($($pageFile.SizeGB) GB)." -Level 'Info'
+            }
+
+            if (Prompt-UserYesNo -Prompt 'Configure page file size now? (Y/N)') {
+                $ConfigurePageFile = $true
+                $script:PageFileDeclinedInitially = $false
+                Write-Log -Message 'User opted to configure the page file after the final prompt.' -Level 'Info'
+                Invoke-ManagedStep -Name 'Configure page file size' -Enabled $true -ScriptBlock $configurePageFileScript
+                $additionalActionsRun = $true
+            }
+            else {
+                Write-Log -Message 'User declined page file configuration during the final prompt.' -Level 'Info'
+            }
+        }
     }
 
-    Write-Log -Message 'Calculating size for C:\\Windows.' -Level 'Substep'
-    $windowsSizeBytes = (Get-ChildItem -LiteralPath 'C:\\Windows' -Recurse -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.PSIsContainer } |
-        Measure-Object -Property Length -Sum).Sum
-    $windowsSizeGB = if ($windowsSizeBytes) { [math]::Round($windowsSizeBytes / 1GB, 2) } else { 0 }
-    Write-Log -Message "C:\\Windows Size: $windowsSizeGB GB." -Level 'Info'
+    if ($additionalActionsRun) {
+        $finalInfo = Get-FreeSpaceInfo -DriveLetter 'C'
+        Write-Log -Message "Free Space After Additional Actions: $($finalInfo.FreeGB) GB ($($finalInfo.PercentFree)% of $($finalInfo.TotalGB) GB)." -Level 'Info'
+        $freed = [math]::Round($finalInfo.FreeGB - $initialInfo.FreeGB, 2)
+        Write-Log -Message "Net Space Freed After Additional Actions: $freed GB." -Level 'Info'
+    }
 
-    if ($windowsSizeGB -gt 35) {
-        Write-Log -Message 'Gathering sizes for top 10 largest C:\\Windows subfolders.' -Level 'Substep'
-        $subfolderSizes = Get-ChildItem -Path 'C:\\Windows' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $subSizeBytes = (Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+    if ($finalInfo.PercentFree -lt 10) {
+        Write-Log -Message 'Free space remains below 10% after additional actions. Gathering diagnostics.' -Level 'Warning'
+
+        $userProfiles = Get-ChildItem -Path 'C:\\Users' -Directory -ErrorAction SilentlyContinue
+        $profileSizes = foreach ($profile in $userProfiles) {
+            Write-Log -Message "Calculating size for profile $($profile.FullName)." -Level 'Substep'
+            $sizeBytes = (Get-ChildItem -LiteralPath $profile.FullName -Recurse -Force -ErrorAction SilentlyContinue |
                 Where-Object { -not $_.PSIsContainer } |
                 Measure-Object -Property Length -Sum).Sum
 
             [pscustomobject]@{
-                Folder = $_.FullName
-                SizeGB = if ($subSizeBytes) { [math]::Round($subSizeBytes / 1GB, 2) } else { 0 }
+                Profile = $profile.FullName
+                SizeGB  = if ($sizeBytes) { [math]::Round($sizeBytes / 1GB, 2) } else { 0 }
             }
         }
 
-        if ($subfolderSizes) {
-            $formattedSubfolders = $subfolderSizes | Sort-Object -Property SizeGB -Descending | Select-Object -First 10 | Format-Table -AutoSize | Out-String
-            Write-Log -Message "Top 10 Largest C:\\Windows Subfolders (GB):`n$formattedSubfolders" -Level 'Info'
+        if ($profileSizes) {
+            $formattedProfiles = $profileSizes | Sort-Object -Property SizeGB -Descending | Format-Table -AutoSize | Out-String
+            Write-Log -Message "User Profile Sizes (GB):`n$formattedProfiles" -Level 'Info'
         }
         else {
-            Write-Log -Message 'Unable to gather C:\\Windows subfolder sizes.' -Level 'Warning'
+            Write-Log -Message 'No user profiles found during diagnostic collection.' -Level 'Info'
         }
+
+        Write-Log -Message 'Calculating size for C:\\Windows.' -Level 'Substep'
+        $windowsSizeBytes = (Get-ChildItem -LiteralPath 'C:\\Windows' -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not $_.PSIsContainer } |
+            Measure-Object -Property Length -Sum).Sum
+        $windowsSizeGB = if ($windowsSizeBytes) { [math]::Round($windowsSizeBytes / 1GB, 2) } else { 0 }
+        Write-Log -Message "C:\\Windows Size: $windowsSizeGB GB." -Level 'Info'
+
+        if ($windowsSizeGB -gt 35) {
+            Write-Log -Message 'Gathering sizes for top 10 largest C:\\Windows subfolders.' -Level 'Substep'
+            $subfolderSizes = Get-ChildItem -Path 'C:\\Windows' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $subSizeBytes = (Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+                    Where-Object { -not $_.PSIsContainer } |
+                    Measure-Object -Property Length -Sum).Sum
+
+                [pscustomobject]@{
+                    Folder = $_.FullName
+                    SizeGB = if ($subSizeBytes) { [math]::Round($subSizeBytes / 1GB, 2) } else { 0 }
+                }
+            }
+
+            if ($subfolderSizes) {
+                $formattedSubfolders = $subfolderSizes | Sort-Object -Property SizeGB -Descending | Select-Object -First 10 | Format-Table -AutoSize | Out-String
+                Write-Log -Message "Top 10 Largest C:\\Windows Subfolders (GB):`n$formattedSubfolders" -Level 'Info'
+            }
+            else {
+                Write-Log -Message 'Unable to gather C:\\Windows subfolder sizes.' -Level 'Warning'
+            }
+        }
+    }
+    else {
+        Write-Log -Message 'Additional actions increased free space above 10%; skipping further diagnostics.' -Level 'Info'
     }
 }
 else {
