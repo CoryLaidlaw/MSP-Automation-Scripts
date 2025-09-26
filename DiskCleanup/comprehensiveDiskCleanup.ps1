@@ -25,7 +25,8 @@ param(
     [bool]$RemoveTargetedProfiles = $true,
     [ValidateSet('Off', 'Steps', 'Substeps', 'Verbose')]
     [string]$ConsoleOutputLevel = 'Substeps',
-    [string]$LogDirectory = 'C:\\Temp'
+    [string]$LogDirectory = 'C:\\Temp',
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -38,6 +39,26 @@ $script:ConsoleThreshold = switch ($ConsoleOutputLevel) {
     'Substeps'  { 2 }
     'Verbose'   { 3 }
     default     { 1 }
+}
+
+$script:IsDryRun = [bool]$DryRun
+
+function Invoke-DryRunOperation {
+    param(
+        [Parameter(Mandatory)][string]$Description,
+        [Parameter()][scriptblock]$Operation,
+        [ValidateSet('Step', 'Substep', 'Verbose', 'Info')]
+        [string]$Level = 'Verbose'
+    )
+
+    if ($script:IsDryRun) {
+        Write-Log -Message "DryRun: $Description" -Level $Level
+        return $null
+    }
+
+    if ($null -ne $Operation) {
+        return & $Operation
+    }
 }
 
 function Initialize-Logging {
@@ -101,6 +122,10 @@ function Write-Log {
 Initialize-Logging -Directory $LogDirectory
 Write-Log -Message "Logging initialized. Log file: $script:LogFile" -Level 'Info'
 
+if ($script:IsDryRun) {
+    Write-Log -Message 'DryRun mode enabled. No changes will be made.' -Level 'Info'
+}
+
 function Get-FreeSpaceInfo {
     param(
         [Parameter(Mandatory)][string]$DriveLetter
@@ -162,53 +187,82 @@ function Invoke-DeletionSequence {
         return
     }
 
+    if ($script:IsDryRun) {
+        Write-Log -Message "DryRun: Would delete $TargetPath." -Level 'Substep'
+        return
+    }
+
     if ($item.PSIsContainer) {
         Write-Log -Message "Taking ownership of directory $TargetPath." -Level 'Verbose'
-        takeown.exe /F "$TargetPath" /A /R /D Y | Out-Null
+        Invoke-DryRunOperation -Description "Taking ownership of directory $TargetPath with takeown.exe." -Operation {
+            takeown.exe /F "$TargetPath" /A /R /D Y | Out-Null
+        } | Out-Null
         Write-Log -Message "Granting Administrators full control on $TargetPath." -Level 'Verbose'
-        icacls.exe "$TargetPath" /grant Administrators:F /T /C | Out-Null
+        Invoke-DryRunOperation -Description "Grant Administrators full control on $TargetPath with icacls.exe." -Operation {
+            icacls.exe "$TargetPath" /grant Administrators:F /T /C | Out-Null
+        } | Out-Null
 
         $emptyDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([guid]::NewGuid().Guid)
         Write-Log -Message "Creating temporary directory $emptyDir for robocopy mirror." -Level 'Verbose'
-        New-Item -ItemType Directory -Path $emptyDir | Out-Null
+        Invoke-DryRunOperation -Description "Create temporary directory $emptyDir." -Operation {
+            New-Item -ItemType Directory -Path $emptyDir | Out-Null
+        } | Out-Null
         try {
             $arguments = @($emptyDir, $TargetPath, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS')
             Write-Log -Message "Executing robocopy to clear directory $TargetPath." -Level 'Verbose'
-            robocopy.exe @arguments | Out-Null
+            Invoke-DryRunOperation -Description "Execute robocopy.exe to mirror empty directory to $TargetPath." -Operation {
+                robocopy.exe @arguments | Out-Null
+            } | Out-Null
         }
         finally {
             Write-Log -Message "Removing temporary directory $emptyDir." -Level 'Verbose'
-            Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+            Invoke-DryRunOperation -Description "Remove temporary directory $emptyDir." -Operation {
+                Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+            } | Out-Null
         }
 
         if (Test-Path -LiteralPath $TargetPath) {
             Write-Log -Message "Removing directory $TargetPath using Remove-Item." -Level 'Verbose'
-            Remove-Item -LiteralPath $TargetPath -Force -Recurse -ErrorAction SilentlyContinue
+            Invoke-DryRunOperation -Description "Remove directory $TargetPath." -Operation {
+                Remove-Item -LiteralPath $TargetPath -Force -Recurse -ErrorAction SilentlyContinue
+            } | Out-Null
         }
     }
     else {
         Write-Log -Message "Taking ownership of file $TargetPath." -Level 'Verbose'
-        takeown.exe /F "$TargetPath" /A /D Y | Out-Null
+        Invoke-DryRunOperation -Description "Taking ownership of file $TargetPath with takeown.exe." -Operation {
+            takeown.exe /F "$TargetPath" /A /D Y | Out-Null
+        } | Out-Null
         Write-Log -Message "Granting Administrators full control on file $TargetPath." -Level 'Verbose'
-        icacls.exe "$TargetPath" /grant Administrators:F /C | Out-Null
+        Invoke-DryRunOperation -Description "Grant Administrators full control on file $TargetPath with icacls.exe." -Operation {
+            icacls.exe "$TargetPath" /grant Administrators:F /C | Out-Null
+        } | Out-Null
 
         $emptyDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([guid]::NewGuid().Guid)
         Write-Log -Message "Creating temporary directory $emptyDir for robocopy mirror." -Level 'Verbose'
-        New-Item -ItemType Directory -Path $emptyDir | Out-Null
+        Invoke-DryRunOperation -Description "Create temporary directory $emptyDir." -Operation {
+            New-Item -ItemType Directory -Path $emptyDir | Out-Null
+        } | Out-Null
         try {
             $parent = Split-Path -Path $TargetPath -Parent
             $arguments = @($emptyDir, $parent, $item.Name, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS')
             Write-Log -Message "Executing robocopy to clear file $TargetPath." -Level 'Verbose'
-            robocopy.exe @arguments | Out-Null
+            Invoke-DryRunOperation -Description "Execute robocopy.exe to mirror empty directory to $TargetPath." -Operation {
+                robocopy.exe @arguments | Out-Null
+            } | Out-Null
         }
         finally {
             Write-Log -Message "Removing temporary directory $emptyDir." -Level 'Verbose'
-            Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+            Invoke-DryRunOperation -Description "Remove temporary directory $emptyDir." -Operation {
+                Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+            } | Out-Null
         }
 
         if (Test-Path -LiteralPath $TargetPath) {
             Write-Log -Message "Removing file $TargetPath using Remove-Item." -Level 'Verbose'
-            Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue
+            Invoke-DryRunOperation -Description "Remove file $TargetPath." -Operation {
+                Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue
+            } | Out-Null
         }
     }
 
@@ -265,25 +319,34 @@ Invoke-ManagedStep -Name 'Clear print spooler cache' -Enabled $CleanPrintSpooler
 
 Invoke-ManagedStep -Name 'Clear Recycle Bin' -Enabled $ClearRecycleBin -ScriptBlock {
     Write-Log -Message 'Emptying recycle bin.' -Level 'Substep'
-    try {
-        Clear-RecycleBin -Force -ErrorAction Stop
-        Write-Log -Message 'Recycle bin emptied successfully.' -Level 'Substep'
+    if ($script:IsDryRun) {
+        Write-Log -Message 'DryRun: Would execute Clear-RecycleBin -Force.' -Level 'Substep'
     }
-    catch {
-        Write-Log -Message "Failed to clear recycle bin : $($_.Exception.Message)" -Level 'Warning'
-        throw
+    else {
+        try {
+            Clear-RecycleBin -Force -ErrorAction Stop
+            Write-Log -Message 'Recycle bin emptied successfully.' -Level 'Substep'
+        }
+        catch {
+            Write-Log -Message "Failed to clear recycle bin : $($_.Exception.Message)" -Level 'Warning'
+            throw
+        }
     }
 }
 
 Invoke-ManagedStep -Name 'Run DISM component cleanup' -Enabled $RunDismCleanup -ScriptBlock {
     $arguments = '/Online', '/Cleanup-Image', '/StartComponentCleanup', '/ResetBase'
     Write-Log -Message "Executing DISM with arguments: $($arguments -join ' ')." -Level 'Substep'
-    $process = Start-Process -FilePath 'dism.exe' -ArgumentList $arguments -Wait -NoNewWindow -PassThru
-    if ($process.ExitCode -ne 0) {
-        Write-Log -Message "DISM exited with code $($process.ExitCode)." -Level 'Warning'
-        throw "DISM failed with exit code $($process.ExitCode)."
+    $process = Invoke-DryRunOperation -Description 'Execute DISM component cleanup.' -Operation {
+        Start-Process -FilePath 'dism.exe' -ArgumentList $arguments -Wait -NoNewWindow -PassThru
+    } -Level 'Substep'
+    if (-not $script:IsDryRun) {
+        if ($process.ExitCode -ne 0) {
+            Write-Log -Message "DISM exited with code $($process.ExitCode)." -Level 'Warning'
+            throw "DISM failed with exit code $($process.ExitCode)."
+        }
+        Write-Log -Message 'DISM component cleanup completed successfully.' -Level 'Substep'
     }
-    Write-Log -Message 'DISM component cleanup completed successfully.' -Level 'Substep'
 }
 
 Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneDriveOnlineOnly -ScriptBlock {
@@ -294,7 +357,9 @@ Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneD
 
     foreach ($folder in $oneDriveFolders) {
         Write-Log -Message "Setting OneDrive folder to online-only: $($folder.FullName)." -Level 'Substep'
-        attrib.exe +U -P "$($folder.FullName)" /S /D | Out-Null
+        Invoke-DryRunOperation -Description "Set OneDrive folder to online-only at $($folder.FullName)." -Operation {
+            attrib.exe +U -P "$($folder.FullName)" /S /D | Out-Null
+        } -Level 'Substep' | Out-Null
     }
 
     if (-not $oneDriveFolders) {
@@ -304,14 +369,22 @@ Invoke-ManagedStep -Name 'Set OneDrive folders to online-only' -Enabled $SetOneD
 
 Invoke-ManagedStep -Name 'Configure page file size' -Enabled $ConfigurePageFile -ScriptBlock {
     Write-Log -Message 'Disabling automatic page file management.' -Level 'Substep'
-    wmic.exe computersystem where "name='%computername%'" set AutomaticManagedPagefile=False | Out-Null
+    Invoke-DryRunOperation -Description 'Disable automatic page file management with WMIC.' -Operation {
+        wmic.exe computersystem where "name='%computername%'" set AutomaticManagedPagefile=False | Out-Null
+    } -Level 'Substep' | Out-Null
 
     Write-Log -Message 'Configuring pagefile to InitialSize=4096, MaximumSize=8192.' -Level 'Substep'
-    $null = wmic.exe pagefileset where "name='C:\\pagefile.sys'" set InitialSize=4096,MaximumSize=8192
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log -Message 'Existing pagefile entry not found. Creating new pagefile configuration.' -Level 'Warning'
-        wmic.exe pagefileset create name="C:\\pagefile.sys" | Out-Null
-        wmic.exe pagefileset where "name='C:\\pagefile.sys'" set InitialSize=4096,MaximumSize=8192 | Out-Null
+    Invoke-DryRunOperation -Description 'Set existing pagefile size with WMIC.' -Operation {
+        wmic.exe pagefileset where "name='C:\\pagefile.sys'" set InitialSize=4096,MaximumSize=8192
+    } -Level 'Substep' | Out-Null
+    if (-not $script:IsDryRun) {
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log -Message 'Existing pagefile entry not found. Creating new pagefile configuration.' -Level 'Warning'
+            Invoke-DryRunOperation -Description 'Create new pagefile configuration with WMIC.' -Operation {
+                wmic.exe pagefileset create name="C:\\pagefile.sys" | Out-Null
+                wmic.exe pagefileset where "name='C:\\pagefile.sys'" set InitialSize=4096,MaximumSize=8192 | Out-Null
+            } -Level 'Substep' | Out-Null
+        }
     }
 }
 
@@ -328,12 +401,17 @@ Invoke-ManagedStep -Name 'Remove targeted user profiles' -Enabled $RemoveTargete
     foreach ($profile in $profiles) {
         $path = $profile.LocalPath
         Write-Log -Message "Attempting to remove profile via WMI: $path." -Level 'Substep'
-        try {
-            Remove-CimInstance -InputObject $profile -ErrorAction Stop
-            Write-Log -Message "Removed profile via WMI: $path." -Level 'Substep'
+        if ($script:IsDryRun) {
+            Write-Log -Message "DryRun: Would remove user profile $path via WMI." -Level 'Substep'
         }
-        catch {
-            Write-Log -Message "Failed to remove profile via WMI for $path : $($_.Exception.Message)" -Level 'Warning'
+        else {
+            try {
+                Remove-CimInstance -InputObject $profile -ErrorAction Stop
+                Write-Log -Message "Removed profile via WMI: $path." -Level 'Substep'
+            }
+            catch {
+                Write-Log -Message "Failed to remove profile via WMI for $path : $($_.Exception.Message)" -Level 'Warning'
+            }
         }
 
         if (Test-Path -LiteralPath $path) {
