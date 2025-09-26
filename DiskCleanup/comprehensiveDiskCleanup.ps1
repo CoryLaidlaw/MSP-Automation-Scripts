@@ -355,7 +355,7 @@ function Invoke-DeletionSequence {
     else {
         Write-Log -Message "Taking ownership of file $TargetPath." -Level 'Verbose'
         Invoke-DryRunOperation -Description "Taking ownership of file $TargetPath with takeown.exe." -Operation {
-            takeown.exe /F "$TargetPath" /A /D Y | Out-Null
+            takeown.exe /F "$TargetPath" /A | Out-Null
         } | Out-Null
         Write-Log -Message "Granting Administrators full control on file $TargetPath." -Level 'Verbose'
         Invoke-DryRunOperation -Description "Grant Administrators full control on file $TargetPath with icacls.exe." -Operation {
