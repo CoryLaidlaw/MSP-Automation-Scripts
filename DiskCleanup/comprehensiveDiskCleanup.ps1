@@ -20,11 +20,11 @@ param(
     [bool]$CleanPrintSpooler = $true,
     [bool]$ClearRecycleBin = $true,
     [bool]$RunDismCleanup = $true,
-    [bool]$SetOneDriveOnlineOnly = $true,
-    [bool]$ConfigurePageFile = $true,
+    [bool]$SetOneDriveOnlineOnly = $false,
+    [bool]$ConfigurePageFile = $false,
     [bool]$RemoveTargetedProfiles = $true,
     [ValidateSet('Off', 'Steps', 'Substeps', 'Verbose')]
-    [string]$ConsoleOutputLevel = 'Substeps',
+    [string]$ConsoleOutputLevel = 'Steps',
     [string]$LogDirectory = 'C:\\Temp',
     [switch]$DryRun
 )
